@@ -19,3 +19,4 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           RUN_ONCE: "1"
         run: python iphone_stock_alert.py
+        
