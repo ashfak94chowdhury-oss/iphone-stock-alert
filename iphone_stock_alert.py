@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -65,8 +66,12 @@ def log(text):
 
 def get(url):
     req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")[:200].replace("\n", " ")
+        raise RuntimeError(f"HTTP {e.code} - {body!r}") from None
 
 
 # ---------- Step 1: find the part number ----------
@@ -76,24 +81,59 @@ def find_part_number(url):
     found = re.findall(r'"partNumber"\s*:\s*"([A-Z0-9]{4,6}AE/A)"', html)
     if not found:
         found = re.findall(r"\b(M[A-Z0-9]{3,5}AE/A)\b", html)
-    return list(dict.fromkeys(found))  # remove duplicates, keep order
+    found = list(dict.fromkeys(found))  # remove duplicates, keep order
+    m_parts = re.findall(r"\b(M[A-Z0-9]{3,5}AE/A)\b", html)
+    log(f"Part numbers on page: {found[:10]} | M-style: {list(dict.fromkeys(m_parts))[:10]}")
+    return found
 
 
 # ---------- Step 2: check stock ----------
+SHOP = "https://www.apple.com/ae/shop"
+WORKING_WAY = None  # remembers which way of asking Apple worked
+
+
+def ways_to_ask(part):
+    """Different ways of asking Apple for stock. We try them in order."""
+    q = urllib.parse.urlencode
+    return [
+        ("A", f"{SHOP}/fulfillment-messages?" + q({"pl": "true", "mts.0": "regular",
+                                                    "parts.0": part, "location": LOCATION})),
+        ("B", f"{SHOP}/fulfillment-messages?" + q({"fae": "true", "pl": "true", "mts.0": "regular",
+                                                    "mts.1": "compact", "parts.0": part,
+                                                    "searchNearby": "true"})),
+        ("C", f"{SHOP}/fulfillment-messages?" + q({"pl": "true", "mts.0": "regular",
+                                                    "parts.0": part})),
+        ("D", f"{SHOP}/retail/pickup-message?" + q({"parts.0": part, "location": LOCATION})),
+    ]
+
+
+def ask_apple(part):
+    global WORKING_WAY
+    errors = []
+    for name, url in ways_to_ask(part):
+        if WORKING_WAY and name != WORKING_WAY:
+            continue
+        try:
+            data = json.loads(get(url))
+            if WORKING_WAY != name:
+                log(f"Way {name} worked. Reply sections: {list(data.get('body', data).keys())[:8]}")
+            WORKING_WAY = name
+            return data
+        except Exception as e:
+            errors.append(f"way {name}: {e}")
+    raise RuntimeError(" | ".join(errors))
+
+
 def check_stock(part):
     """Asks Apple's store for pickup + delivery availability of one part."""
-    query = urllib.parse.urlencode({
-        "pl": "true",
-        "mts.0": "regular",
-        "parts.0": part,
-        "location": LOCATION,
-    })
-    data = json.loads(get(f"https://www.apple.com/ae/shop/fulfillment-messages?{query}"))
-    content = data.get("body", {}).get("content", {})
+    data = ask_apple(part)
+    content = data.get("body", {}).get("content", data.get("body", {}))
 
     # Pickup at stores
     available_stores = []
-    for store in content.get("pickupMessage", {}).get("stores", []):
+    stores = content.get("pickupMessage", {}).get("stores") or content.get("stores") or []
+    log(f"Apple listed {len(stores)} store(s).")
+    for store in stores:
         info = store.get("partsAvailability", {}).get(part, {})
         if info.get("pickupDisplay") == "available":
             available_stores.append(store.get("storeName", "Unknown store"))
