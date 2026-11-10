@@ -114,9 +114,12 @@ def ask_apple(part):
         if WORKING_WAY and name != WORKING_WAY:
             continue
         try:
-            data = json.loads(get(url))
+            text = get(url)
+            data = json.loads(text)
             if WORKING_WAY != name:
-                log(f"Way {name} worked. Reply sections: {list(data.get('body', data).keys())[:8]}")
+                for err in errors:
+                    log("Failed " + err)
+                log(f"Way {name} worked. Apple's reply (start): {text[:1500]}")
             WORKING_WAY = name
             return data
         except Exception as e:
